@@ -1,39 +1,42 @@
-import * as poseDetection from "@tensorflow-models/pose-detection";
+"use client";
 
-type Point = {
+import { initDetector } from "@/lib/detector";
+
+export type Point = {
 x: number;
 y: number;
 score?: number;
+name?: string;
 };
 
-let detector: poseDetection.PoseDetector | null = null;
+export type PoseFrame = {
+keypoints: Point[];
+};
 
-export async function initPose() {
-if (detector) return detector;
+export async function estimatePose(
+video: HTMLVideoElement,
+): Promise<PoseFrame | null> {
+if (!video || video.readyState < 2) return null;
 
-detector = await poseDetection.createDetector(
-poseDetection.SupportedModels.MoveNet,
-{
-modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
-enableSmoothing: true,
-}
-);
-
-return detector;
-}
-
-export async function detectPose(
-video: HTMLVideoElement
-): Promise<Point[]> {
-if (!detector) return [];
-
+const detector = await initDetector();
 const poses = await detector.estimatePoses(video);
+const pose = poses?.[0];
 
-if (!poses.length) return [];
+if (!pose) return null;
 
-return (poses[0].keypoints || []).map((kp) => ({
-x: kp.x ?? 0,
-y: kp.y ?? 0,
-score: kp.score ?? 0,
-}));
+return {
+keypoints: pose.keypoints.map((k) => ({
+x: k.x,
+y: k.y,
+score: k.score,
+name: k.name,
+})),
+};
+}
+
+export async function estimatePoses(
+video: HTMLVideoElement,
+): Promise<PoseFrame[]> {
+const pose = await estimatePose(video);
+return pose ? [pose] : [];
 }

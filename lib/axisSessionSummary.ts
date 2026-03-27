@@ -2,70 +2,95 @@ import type { AxisRep } from "@/lib/axisRepStore";
 
 export type AxisSessionSummary = {
 totalReps: number;
-rushedEnter: number;
+
 cleanEnter: number;
+rushedEnter: number;
 delayedEnter: number;
-rushedGo: number;
+
 cleanGo: number;
+rushedGo: number;
 delayedGo: number;
+
+goodHold: number;
 shortHold: number;
-cleanHold: number;
+
 straightLine: number;
 offLine: number;
-avgLineScore: number;
-avgHoldTime: number;
+
+cleanPct: number;
+rushedPct: number;
+delayedPct: number;
+
+straightPct: number;
+offLinePct: number;
+
+goodHoldPct: number;
+shortHoldPct: number;
 };
 
-export function emptySessionSummary(): AxisSessionSummary {
-return {
-totalReps: 0,
-rushedEnter: 0,
+function pct(count: number, total: number) {
+if (!total) return 0;
+return Math.round((count / total) * 100);
+}
+
+export function buildAxisSessionSummary(
+reps: AxisRep[],
+): AxisSessionSummary {
+const summary: AxisSessionSummary = {
+totalReps: reps.length,
+
 cleanEnter: 0,
+rushedEnter: 0,
 delayedEnter: 0,
-rushedGo: 0,
+
 cleanGo: 0,
+rushedGo: 0,
 delayedGo: 0,
+
+goodHold: 0,
 shortHold: 0,
-cleanHold: 0,
+
 straightLine: 0,
 offLine: 0,
-avgLineScore: 0,
-avgHoldTime: 0,
+
+cleanPct: 0,
+rushedPct: 0,
+delayedPct: 0,
+
+straightPct: 0,
+offLinePct: 0,
+
+goodHoldPct: 0,
+shortHoldPct: 0,
 };
-}
-
-export function computeSessionSummary(reps: AxisRep[]): AxisSessionSummary {
-if (!reps.length) return emptySessionSummary();
-
-let lineTotal = 0;
-let holdTotal = 0;
-
-const summary = emptySessionSummary();
-summary.totalReps = reps.length;
 
 for (const rep of reps) {
-const { interpretation, metrics } = rep;
+const { entry, go, hold, line } = rep;
 
-if (interpretation.enter === "RUSHED") summary.rushedEnter += 1;
-if (interpretation.enter === "CLEAN") summary.cleanEnter += 1;
-if (interpretation.enter === "DELAYED") summary.delayedEnter += 1;
+if (entry === "clean") summary.cleanEnter += 1;
+if (entry === "rushed") summary.rushedEnter += 1;
+if (entry === "delayed") summary.delayedEnter += 1;
 
-if (interpretation.go === "RUSHED") summary.rushedGo += 1;
-if (interpretation.go === "CLEAN") summary.cleanGo += 1;
-if (interpretation.go === "DELAYED") summary.delayedGo += 1;
+if (go === "clean") summary.cleanGo += 1;
+if (go === "rushed") summary.rushedGo += 1;
+if (go === "delayed") summary.delayedGo += 1;
 
-if (interpretation.hold === "SHORT") summary.shortHold += 1;
-if (interpretation.hold === "CLEAN") summary.cleanHold += 1;
+if (hold === "good") summary.goodHold += 1;
+if (hold === "short") summary.shortHold += 1;
 
-if (interpretation.line === "STRAIGHT") summary.straightLine += 1;
-if (interpretation.line === "OFF") summary.offLine += 1;
-
-lineTotal += metrics.lineScore;
-holdTotal += metrics.holdTime;
+if (line === "straight") summary.straightLine += 1;
+if (line === "off") summary.offLine += 1;
 }
 
-summary.avgLineScore = Math.round(lineTotal / reps.length);
-summary.avgHoldTime = Math.round(holdTotal / reps.length);
+summary.cleanPct = pct(summary.cleanEnter, summary.totalReps);
+summary.rushedPct = pct(summary.rushedEnter, summary.totalReps);
+summary.delayedPct = pct(summary.delayedEnter, summary.totalReps);
+
+summary.straightPct = pct(summary.straightLine, summary.totalReps);
+summary.offLinePct = pct(summary.offLine, summary.totalReps);
+
+summary.goodHoldPct = pct(summary.goodHold, summary.totalReps);
+summary.shortHoldPct = pct(summary.shortHold, summary.totalReps);
 
 return summary;
 }

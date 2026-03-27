@@ -1,125 +1,62 @@
-import type { AxisRep } from "@/lib/axisRepStore";
-import type { AxisSessionSummary } from "@/lib/axisSessionSummary";
+export type AxisSessionSummary = {
+totalReps: number;
 
-export type AxisReport = {
-title: string;
-overview: string;
-tendencies: string[];
-latestRep: string;
-coachNote: string;
-confidenceNote: string;
+cleanPct: number;
+rushedPct: number;
+delayedPct: number;
+
+straightPct: number;
+offLinePct: number;
+
+shortHoldPct: number;
+goodHoldPct: number;
 };
 
-function topEnter(summary: AxisSessionSummary) {
+export type AxisReport = {
+topEntry: "clean" | "rushed" | "delayed";
+topLine: "straight" | "off";
+topHold: "short" | "good";
+
+summary: AxisSessionSummary;
+};
+
+// 🔑 SAFELY get highest % (fixes readonly issue)
+function topEntry(summary: AxisSessionSummary): AxisReport["topEntry"] {
 const pairs = [
-["clean", summary.cleanEnter],
-["rushed", summary.rushedEnter],
-["delayed", summary.delayedEnter],
+["clean", summary.cleanPct],
+["rushed", summary.rushedPct],
+["delayed", summary.delayedPct],
 ] as const;
 
-return pairs.sort((a, b) => b[1] - a[1])[0][0];
+return [...pairs].sort((a, b) => b[1] - a[1])[0][0];
 }
 
-function topGo(summary: AxisSessionSummary) {
+function topLine(summary: AxisSessionSummary): AxisReport["topLine"] {
 const pairs = [
-["clean", summary.cleanGo],
-["rushed", summary.rushedGo],
-["delayed", summary.delayedGo],
+["straight", summary.straightPct],
+["off", summary.offLinePct],
 ] as const;
 
-return pairs.sort((a, b) => b[1] - a[1])[0][0];
+return [...pairs].sort((a, b) => b[1] - a[1])[0][0];
 }
 
-function latestRepLine(rep: AxisRep | null) {
-if (!rep) return "No completed rep yet.";
+function topHold(summary: AxisSessionSummary): AxisReport["topHold"] {
+const pairs = [
+["good", summary.goodHoldPct],
+["short", summary.shortHoldPct],
+] as const;
 
-return `Latest rep: Enter ${rep.interpretation.enter}, Go ${rep.interpretation.go}, Hold ${rep.interpretation.hold}, Line ${rep.interpretation.line}.`;
+return [...pairs].sort((a, b) => b[1] - a[1])[0][0];
 }
 
-function buildOverview(summary: AxisSessionSummary) {
-if (summary.totalReps === 0) {
-return "Stand in frame. Earn SET to begin first rep.";
-}
-
-return `Session captured ${summary.totalReps} completed reps with an average line score of ${summary.avgLineScore} and an average hold time of ${summary.avgHoldTime} ms.`;
-}
-
-function buildTendencies(summary: AxisSessionSummary) {
-const tendencies: string[] = [];
-
-if (summary.totalReps === 0) return tendencies;
-
-const enter = topEnter(summary);
-const go = topGo(summary);
-
-tendencies.push(`Primary entry tendency: ${enter}.`);
-tendencies.push(`Primary go tendency: ${go}.`);
-
-if (summary.shortHold > summary.cleanHold) {
-tendencies.push("Finish is breaking short too often.");
-} else {
-tendencies.push("Finish is mostly being held.");
-}
-
-if (summary.offLine > summary.straightLine) {
-tendencies.push("Line is drifting more than it is holding straight.");
-} else {
-tendencies.push("Line is holding mostly straight.");
-}
-
-return tendencies;
-}
-
-function buildCoachNote(summary: AxisSessionSummary) {
-if (summary.totalReps === 0) {
-return "First job is to earn full reps consistently.";
-}
-
-if (summary.rushedEnter > summary.cleanEnter) {
-return "Slow the load. Earn the set before the rep starts climbing.";
-}
-
-if (summary.rushedGo > summary.cleanGo) {
-return "The rep is breaking early. Let the rise complete before release.";
-}
-
-if (summary.shortHold > summary.cleanHold) {
-return "Stay through the finish longer. Do not let the rep disappear early.";
-}
-
-if (summary.offLine > summary.straightLine) {
-return "Keep the wrist path stacked over the center line.";
-}
-
-return "The session is trending clean. Repeat the same rhythm and keep stacking clean reps.";
-}
-
-function buildConfidenceNote(rep: AxisRep | null) {
-if (!rep) {
-return "Confidence is low because no completed rep has been captured yet.";
-}
-
-if (rep.confidence < 55) {
-return "Confidence is low. The system saw the rep, but signal quality was weak.";
-}
-
-if (rep.confidence < 80) {
-return "Confidence is medium. The system has a usable reading with some noise present.";
-}
-
-return "Confidence is high. Signal, gate, and phase integrity were strong.";
-}
-
-export function buildReport(
-summary: AxisSessionSummary,
-latestRep: AxisRep | null
+// 🔥 MAIN REPORT BUILDER
+export function buildAxisReport(
+summary: AxisSessionSummary
 ): AxisReport {
 return {
-title: "AXIS Session Report",
-overview: buildOverview(summary),
-tendencies: buildTendencies(summary),
-latestRep: latestRepLine(latestRep),
-coachNote: buildCoachNote(summary),
-confidenceNote: buildConfidenceNote(latestRep),
+topEntry: topEntry(summary),
+topLine: topLine(summary),
+topHold: topHold(summary),
+summary,
 };
 }
