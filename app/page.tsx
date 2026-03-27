@@ -311,12 +311,20 @@ connectedPct,
 }, [repHistory]);
 
 useEffect(() => {
+let mounted = true;
+
 initDetector()
-.then(() => setDetectorReady(true))
+.then(() => {
+if (mounted) setDetectorReady(true);
+})
 .catch((error) => {
 console.error("Detector init failed:", error);
-setDetectorReady(false);
+if (mounted) setDetectorReady(false);
 });
+
+return () => {
+mounted = false;
+};
 }, []);
 
 useEffect(() => {
@@ -325,6 +333,7 @@ if (flashTimeoutRef.current) window.clearTimeout(flashTimeoutRef.current);
 if (streamRef.current) {
 streamRef.current.getTracks().forEach((track) => track.stop());
 }
+window.detector?.dispose?.();
 };
 }, []);
 

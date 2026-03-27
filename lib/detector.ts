@@ -1,82 +1,68 @@
-import * as tf from "@tensorflow/tfjs";
-import "@tensorflow/tfjs-backend-webgl";
-import * as poseDetection from "@tensorflow-models/pose-detection";
+"use client";
+
+type DetectorInstance = {
+estimatePoses: (video: HTMLVideoElement) => Promise<any[]>;
+dispose?: () => void;
+};
 
 declare global {
 interface Window {
-detector?: poseDetection.PoseDetector;
+detector?: DetectorInstance;
 }
 }
 
-let detectorPromise: Promise<poseDetection.PoseDetector> | null = null;
+let detectorPromise: Promise<DetectorInstance> | null = null;
 
-export async function initDetector() {
+export async function initDetector(): Promise<DetectorInstance> {
 if (typeof window === "undefined") {
-throw new Error("initDetector must run in the browser.");
+throw new Error("Detector can only initialize in the browser.");
 }
 
 if (window.detector) {
 return window.detector;
 }
 
-if (!detectorPromise) {
-detectorPromise = createMoveNetDetector();
+if (detectorPromise) {
+return detectorPromise;
 }
 
-const detector = await detectorPromise;
-window.detector = detector;
-return detector;
+detectorPromise = (async () => {
+const tf = await import("@tensorflow/tfjs");
+await import("@tensorflow/tfjs-backend-webgl");
+const poseDetection = await import("@tensorflow-models/pose-detection");
+
+await tf.setBackend("webgl");
+await tf.ready();
+
+const detector = await poseDetection.createDetector(
+poseDetection.SupportedModels.MoveNet,
+{
+modelType: (poseDetection as any).movenet?.modelType?.SINGLEPOSE_LIGHTNING ?? "SinglePose.Lightning",
+} as any,
+);
+
+const wrapped: DetectorInstance = {
+estimatePoses: async (video: HTMLVideoElement) => {
+if (!video) return [];
+return detector.estimatePoses(video);
+},
+dispose: () => {
+try {
+detector.dispose?.();
+} catch (error) {
+console.error("Detector dispose failed:", error);
 }
-
-export async function getDetector() {
-if (typeof window === "undefined") {
-throw new Error("getDetector must run in the browser.");
-}
-
-if (window.detector) {
-return window.detector;
-}
-
-return initDetector();
-}
-
-export async function disposeDetector() {
-if (typeof window === "undefined") return;
-
-if (window.detector) {
-window.detector.dispose();
-window.detector = undefined;
-}
-
-detectorPromise = null;
-}
-
-async function createMoveNetDetector() {
-await ensureTfReady();
-
-const model = poseDetection.SupportedModels.MoveNet;
-
-const detectorConfig: poseDetection.MoveNetModelConfig = {
-modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
-enableSmoothing: true,
+},
 };
 
-const detector = await poseDetection.createDetector(model, detectorConfig);
-return detector;
+window.detector = wrapped;
+return wrapped;
+})();
+
+try {
+return await detectorPromise;
+} catch (error) {
+detectorPromise = null;
+throw error;
 }
-
-async function ensureTfReady() {
-await tf.ready();
-
-const current = tf.getBackend();
-
-if (current !== "webgl") {
-const ok = await tf.setBackend("webgl");
-if (!ok) {
-throw new Error("Failed to set TensorFlow.js backend to webgl.");
-}
-await tf.ready();
-}
-
-return tf.getBackend();
 }
