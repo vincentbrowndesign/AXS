@@ -5,7 +5,7 @@ import { initDetector } from "@/lib/detector";
 import { saveRep } from "@/lib/supabase/saveRep";
 import { buildRepPayload } from "@/lib/supabase/buildRepPayload";
 
-type InstrumentMode = "SEARCHING" | "LOCKING" | "READY" | "RESULT";
+type InstrumentMode = "WAITING" | "ACQUIRING" | "LOCKED" | "TRACKING" | "RESULT";
 
 type AxisState =
 | "NO_SUBJECT"
@@ -80,11 +80,11 @@ dispose?: () => void;
 }
 
 const FIELD_POINTS: SignalPoint[] = [
-{ x: 0.58, y: 0.24, strength: 0.9 },
-{ x: 0.62, y: 0.2, strength: 0.7 },
-{ x: 0.68, y: 0.18, strength: 1.0 },
-{ x: 0.73, y: 0.21, strength: 0.8 },
-{ x: 0.78, y: 0.24, strength: 0.85 },
+{ x: 0.18, y: 0.22, strength: 0.7 },
+{ x: 0.26, y: 0.18, strength: 0.55 },
+{ x: 0.72, y: 0.16, strength: 0.65 },
+{ x: 0.81, y: 0.24, strength: 0.9 },
+{ x: 0.68, y: 0.76, strength: 0.5 },
 ];
 
 function clamp(value: number, min: number, max: number) {
@@ -98,6 +98,10 @@ hour: "numeric",
 minute: "2-digit",
 second: "2-digit",
 });
+}
+
+function formatMs(ms: number) {
+return `${Math.round(ms)}ms`;
 }
 
 function getKeypoint(person: PoseLike, names: string[]) {
@@ -122,7 +126,6 @@ return (visible / person.keypoints.length) * 100;
 function getCentered(person: PoseLike, frameWidth: number) {
 const nose = getKeypoint(person, ["nose"]);
 if (!nose) return 0;
-
 const centerX = frameWidth / 2;
 const diff = Math.abs(nose.x - centerX);
 return clamp(100 - diff / 6, 0, 100);
@@ -131,9 +134,7 @@ return clamp(100 - diff / 6, 0, 100);
 function getIntegrity(person: PoseLike) {
 const leftShoulder = getKeypoint(person, ["left_shoulder", "leftshoulder"]);
 const rightShoulder = getKeypoint(person, ["right_shoulder", "rightshoulder"]);
-
 if (!leftShoulder || !rightShoulder) return 0;
-
 const width = Math.abs(leftShoulder.x - rightShoulder.x);
 return clamp(width / 3, 0, 100);
 }
@@ -181,12 +182,10 @@ if (!holdStateRef.current.holding) {
 holdStateRef.current.holding = true;
 holdStateRef.current.holdStart = performance.now();
 }
-} else {
-if (holdStateRef.current.holding) {
+} else if (holdStateRef.current.holding) {
 const duration = performance.now() - holdStateRef.current.holdStart;
 holdStateRef.current.holding = false;
 return duration;
-}
 }
 
 if (holdStateRef.current.holding) {
@@ -205,6 +204,18 @@ if (metrics.holdMs > 0 && !metrics.releaseDetected) return "SET";
 return "SEARCHING";
 }
 
+function getInstrumentMode(
+metrics: LiveMetrics,
+lockStrength: number,
+showResultFlash: boolean,
+): InstrumentMode {
+if (showResultFlash) return "RESULT";
+if (!metrics.subjectVisible) return "WAITING";
+if (lockStrength < 48) return "ACQUIRING";
+if (metrics.releaseDetected || metrics.holdMs > 0) return "TRACKING";
+return "LOCKED";
+}
+
 function sleep(ms: number) {
 return new Promise<void>((resolve) => {
 window.setTimeout(resolve, ms);
@@ -212,7 +223,7 @@ window.setTimeout(resolve, ms);
 }
 
 export default function Page() {
-const [mode, setMode] = useState<InstrumentMode>("SEARCHING");
+const [mode, setMode] = useState<InstrumentMode>("WAITING");
 const [axisState, setAxisState] = useState<AxisState>("NO_SUBJECT");
 
 const [lockStrength, setLockStrength] = useState(0);
@@ -397,13 +408,14 @@ liveMetrics.centeredScore * 0.26,
 
 const nextSignal = Math.round(clamp(liveMetrics.signalScore, 0, 100));
 const nextIntegrity = Math.round(clamp(liveMetrics.integrityScore, 0, 100));
-
 const nextAxisState = getAxisState(liveMetrics);
+const nextMode = getInstrumentMode(liveMetrics, nextLock, showResultFlash);
 
 setLockStrength(nextLock);
 setSignalStrength(nextSignal);
 setIntegrity(nextIntegrity);
 setAxisState(nextAxisState);
+setMode(nextMode);
 
 repArcRef.current = {
 entry: liveMetrics.centeredScore,
@@ -412,16 +424,6 @@ exit: liveMetrics.lineScore,
 integrity: liveMetrics.integrityScore,
 state: nextAxisState,
 };
-
-if (showResultFlash) return;
-
-if (!liveMetrics.subjectVisible || nextLock < 22) {
-setMode("SEARCHING");
-} else if (nextLock < 48) {
-setMode("LOCKING");
-} else {
-setMode("READY");
-}
 }, 80);
 
 return () => window.clearInterval(id);
@@ -546,8 +548,7 @@ timestamp: rep.timestamp,
 },
 });
 
-const saved = await saveRep(payload);
-console.log("Saved:", saved);
+await saveRep(payload);
 
 setSaveStatus("saved");
 window.setTimeout(() => {
@@ -567,7 +568,7 @@ setVideoSize("0x0");
 setLatestRep(null);
 setRepHistory([]);
 setSessionConfidence(0);
-setMode("SEARCHING");
+setMode("WAITING");
 setAxisState("NO_SUBJECT");
 setSaveStatus("idle");
 sessionIdRef.current = `session_${new Date().toISOString()}_${Math.random()
@@ -673,21 +674,13 @@ axisState: arc.state,
 };
 
 setLatestRep(rep);
-setRepHistory((prev) => [rep, ...prev].slice(0, 10));
-setMode("RESULT");
+setRepHistory((prev) => [rep, ...prev].slice(0, 12));
 setShowResultFlash(true);
+setMode("RESULT");
 
 if (flashTimeoutRef.current) window.clearTimeout(flashTimeoutRef.current);
 flashTimeoutRef.current = window.setTimeout(() => {
 setShowResultFlash(false);
-
-if (!liveMetrics.subjectVisible || lockStrength < 22) {
-setMode("SEARCHING");
-} else if (lockStrength < 48) {
-setMode("LOCKING");
-} else {
-setMode("READY");
-}
 }, 650);
 
 if (shouldPersist) {
@@ -699,7 +692,7 @@ function resetSession() {
 setLatestRep(null);
 setRepHistory([]);
 setSessionConfidence(0);
-setMode("SEARCHING");
+setMode("WAITING");
 setAxisState("NO_SUBJECT");
 setSaveStatus("idle");
 sessionIdRef.current = `session_${new Date().toISOString()}_${Math.random()
@@ -707,23 +700,51 @@ sessionIdRef.current = `session_${new Date().toISOString()}_${Math.random()
 .slice(2, 8)}`;
 }
 
+const modeLabel = (() => {
+if (mode === "WAITING") return "WAITING";
+if (mode === "ACQUIRING") return "ACQUIRING";
+if (mode === "LOCKED") return "LOCKED";
+if (mode === "TRACKING") return "TRACKING";
+return "RESULT";
+})();
+
 const dominantLabel = (() => {
 if (showResultFlash && latestRep) {
 return `${latestRep.entry} • ${latestRep.exit}`;
 }
-if (mode === "SEARCHING") return "NO TARGET";
-if (mode === "LOCKING") return "LOCKING";
-if (mode === "READY") return "READY";
+if (mode === "WAITING") return "NO TARGET";
+if (mode === "ACQUIRING") return "ACQUIRE";
+if (mode === "LOCKED") return "READY";
+if (mode === "TRACKING") return "TRACKING";
 return "RESULT";
 })();
 
+const modeCopy = (() => {
+if (showResultFlash && latestRep) {
+return `ENTRY ${latestRep.entry} • CORE ${latestRep.core} • EXIT ${latestRep.exit} • LINK ${latestRep.integrity}`;
+}
+if (mode === "WAITING") return "Bring body into field. Establish baseline.";
+if (mode === "ACQUIRING") return "Scene is stabilizing. Hold center and let lock rise.";
+if (mode === "LOCKED") return "Measurement ready. Field stable. Await first rep.";
+if (mode === "TRACKING") return "Event window open. Preserve line and hold.";
+return "Rep reconstructed.";
+})();
+
+const saveTone =
+saveStatus === "saved"
+? "text-[#7CFF6B]"
+: saveStatus === "saving"
+? "text-[#FFD84D]"
+: saveStatus === "error"
+? "text-[#FF6262]"
+: "text-white/55";
+
 return (
-<main className="min-h-screen bg-[#050505] text-[#f3f3ee]">
-<div className="relative h-screen w-full overflow-hidden">
-<div className="absolute inset-0 z-0 bg-black">
+<main className="min-h-screen bg-[#060606] text-[#F3F5F7]">
+<div className="relative h-screen w-full overflow-hidden bg-black">
 <video
 ref={videoRef}
-className={`h-full w-full object-cover transition-opacity duration-200 ${
+className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${
 cameraEnabled ? "opacity-100" : "opacity-0"
 }`}
 playsInline
@@ -736,207 +757,146 @@ setVideoReady(true);
 setVideoSize(`${v.videoWidth || 0}x${v.videoHeight || 0}`);
 }}
 />
-</div>
 
-<div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.02),transparent_48%)]" />
+<div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.025),transparent_52%)]" />
+<div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.16),rgba(0,0,0,0.52))]" />
 
 <div
-className="absolute inset-0 opacity-10"
+className="absolute inset-0 opacity-[0.08]"
 style={{
 backgroundImage:
-"linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)",
-backgroundSize: "64px 64px",
-transform: "scale(1.02) rotate(-0.15deg)",
-}}
-/>
-
-<div
-className="pointer-events-none absolute inset-y-0 left-0 w-[28%]"
-style={{
-opacity: 0.08,
-background:
-"linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 38%, rgba(255,255,255,0.00) 100%)",
+"linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)",
+backgroundSize: "56px 56px",
 }}
 />
 
 <div className="pointer-events-none absolute inset-0">
-<div
-className="absolute left-1/2 top-1/2 h-[34rem] w-[34rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/10"
-style={{ boxShadow: "0 0 90px rgba(255,255,255,0.03) inset" }}
-/>
-<div className="absolute left-1/2 top-1/2 h-[20rem] w-[20rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/10" />
-<div className="absolute left-1/2 top-1/2 h-[8rem] w-[8rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/15" />
-
-<div className="absolute left-1/2 top-1/2 h-[36rem] w-[2px] -translate-x-1/2 -translate-y-1/2 bg-white/10" />
+<div className="absolute left-1/2 top-1/2 h-[34rem] w-[34rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/10" />
+<div className="absolute left-1/2 top-1/2 h-[21rem] w-[21rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/10" />
+<div className="absolute left-1/2 top-1/2 h-[9rem] w-[9rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/15" />
 <div className="absolute left-1/2 top-1/2 h-[2px] w-[36rem] -translate-x-1/2 -translate-y-1/2 bg-white/10" />
+<div className="absolute left-1/2 top-1/2 h-[36rem] w-[2px] -translate-x-1/2 -translate-y-1/2 bg-white/10" />
 
 <div
-className="absolute left-1/2 top-1/2 h-[19rem] w-[19rem] -translate-x-1/2 -translate-y-1/2 rounded-full border"
+className="absolute left-1/2 top-1/2 h-[19rem] w-[19rem] -translate-x-1/2 -translate-y-1/2 rounded-full border transition-all duration-150"
 style={{
 borderColor:
 lockStrength >= 48
-? "rgba(57,255,20,0.8)"
+? "rgba(124,255,107,0.88)"
 : "rgba(255,255,255,0.18)",
 boxShadow:
 lockStrength >= 48
-? "0 0 28px rgba(57,255,20,0.28), inset 0 0 28px rgba(57,255,20,0.08)"
-: "0 0 18px rgba(255,255,255,0.06)",
-transform: `translate(-50%, -50%) scale(${0.96 + lockStrength / 800})`,
-transition: "all 120ms linear",
+? "0 0 30px rgba(124,255,107,0.18), inset 0 0 30px rgba(124,255,107,0.08)"
+: "0 0 14px rgba(255,255,255,0.04)",
+transform: `translate(-50%, -50%) scale(${0.96 + lockStrength / 900})`,
 }}
 />
 
 <div
-className="absolute top-[10%] h-[80%] w-[2px] bg-gradient-to-b from-transparent via-[#39FF14] to-transparent opacity-75"
+className="absolute top-[10%] h-[80%] w-[2px] bg-gradient-to-b from-transparent via-[#7CFF6B] to-transparent opacity-80"
 style={{
 left: `${8 + scanPhase * 0.84}%`,
-boxShadow: "0 0 18px rgba(57,255,20,0.4)",
+boxShadow: "0 0 18px rgba(124,255,107,0.4)",
 transition: "left 120ms linear",
 }}
 />
 
 {FIELD_POINTS.map((point, index) => {
 const pulse = 1 + Math.sin((scanPhase + index * 13) / 8) * 0.18;
-
 return (
 <div
 key={`${point.x}-${point.y}`}
-className="absolute rounded-full bg-[#ff4d4d]"
+className="absolute rounded-full bg-[#FF6262]"
 style={{
 left: `${point.x * 100}%`,
 top: `${point.y * 100}%`,
 width: `${8 + point.strength * 4}px`,
 height: `${8 + point.strength * 4}px`,
 transform: `translate(-50%, -50%) scale(${pulse})`,
-boxShadow: "0 0 18px rgba(255,77,77,0.55)",
-opacity: 0.95,
+boxShadow: "0 0 18px rgba(255,98,98,0.4)",
 }}
 />
 );
 })}
 </div>
 
-<section className="absolute left-0 top-0 flex h-full w-full">
-<div className="flex w-[26rem] flex-col justify-between p-6 md:p-8">
-<div className="space-y-6">
-<div className="space-y-3">
-<div className="h-[6px] w-32 bg-white/15">
-<div
-className="h-full bg-[#39FF14] transition-all duration-150"
-style={{ width: `${clamp(lockStrength, 6, 100)}%` }}
-/>
-</div>
-<div className="h-[6px] w-28 bg-white/10">
-<div
-className="h-full bg-white/40 transition-all duration-150"
-style={{ width: `${clamp(signalStrength, 4, 100)}%` }}
-/>
-</div>
-<div className="h-[6px] w-24 bg-white/10">
-<div
-className="h-full bg-white/25 transition-all duration-150"
-style={{ width: `${clamp(integrity, 4, 100)}%` }}
-/>
-</div>
-</div>
-
-<div className="space-y-3">
-<div className="text-[11px] uppercase tracking-[0.35em] text-white/45">
+<div className="absolute inset-x-0 top-0 z-10 flex items-start justify-between p-4 md:p-6">
+<div className="rounded-2xl border border-white/10 bg-black/40 px-4 py-3 backdrop-blur-md">
+<div className="text-[10px] uppercase tracking-[0.34em] text-white/45">
 AXIS v2
 </div>
-
-<div
-className="text-4xl font-semibold tracking-tight text-white"
-style={{
-textShadow: showResultFlash
-? "0 0 22px rgba(57,255,20,0.28)"
-: "none",
-}}
->
+<div className="mt-2 text-2xl font-semibold tracking-tight text-white md:text-4xl">
 {dominantLabel}
 </div>
-
-<div className="max-w-[18rem] text-sm leading-6 text-white/60">
-{showResultFlash && latestRep ? (
-<>
-ENTRY {latestRep.entry} • CORE {latestRep.core} • EXIT{" "}
-{latestRep.exit} • LINK {latestRep.integrity}
-</>
-) : mode === "SEARCHING" ? (
-"Acquire body. Enter frame. Stabilize signal."
-) : mode === "LOCKING" ? (
-"Structure rising. Hold body inside field."
-) : (
-"Signal stable. Ready for first rep."
-)}
-</div>
-
-<div className="text-xs uppercase tracking-[0.28em] text-white/35">
-STATE: {axisState}
+<div className="mt-2 max-w-[18rem] text-xs leading-5 text-white/60 md:text-sm">
+{modeCopy}
 </div>
 </div>
 
-<div className="grid grid-cols-2 gap-3 text-sm">
-<MetricCard
+<div className="hidden gap-3 md:flex">
+<TopChip label="MODE" value={modeLabel} active={mode !== "WAITING"} />
+<TopChip label="STATE" value={axisState} active={axisState !== "NO_SUBJECT"} />
+<TopChip label="SAVE" value={saveStatus.toUpperCase()} active={saveStatus === "saved"} />
+</div>
+</div>
+
+<div className="absolute left-4 top-[8.7rem] z-10 hidden w-[18rem] space-y-3 md:block">
+<MetricRail label="LOCK" value={lockStrength} accent={lockStrength >= 48} />
+<MetricRail label="SIGNAL" value={signalStrength} accent={signalStrength >= 42} />
+<MetricRail label="INTEGRITY" value={integrity} accent={integrity >= 42} />
+<MetricRail label="SESSION" value={sessionConfidence} accent={sessionConfidence >= 55} />
+</div>
+
+<div className="absolute bottom-4 left-4 right-4 z-10 md:left-6 md:right-6 md:bottom-6">
+<div className="grid gap-4 xl:grid-cols-[1.35fr,0.95fr]">
+<div className="rounded-[28px] border border-white/10 bg-black/45 p-4 backdrop-blur-md md:p-5">
+<div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+<div className="grid flex-1 grid-cols-2 gap-3 md:grid-cols-4">
+<StatCard
 label="LOCK"
-value={lockStrength}
-tone={lockStrength >= 48 ? "hot" : "cold"}
+value={String(lockStrength)}
+foot="capture confidence"
+active={lockStrength >= 48}
 />
-<MetricCard
+<StatCard
 label="SIGNAL"
-value={signalStrength}
-tone={signalStrength >= 42 ? "hot" : "cold"}
+value={String(signalStrength)}
+foot="movement certainty"
+active={signalStrength >= 42}
 />
-<MetricCard
-label="INTEGRITY"
-value={integrity}
-tone={integrity >= 42 ? "hot" : "cold"}
+<StatCard
+label="HOLD"
+value={formatMs(liveMetrics.holdMs)}
+foot="active window"
+active={liveMetrics.holdMs > 0}
 />
-<MetricCard
-label="SESSION"
-value={sessionConfidence}
-tone={sessionConfidence >= 55 ? "hot" : "cold"}
+<StatCard
+label="LINE"
+value={String(Math.round(liveMetrics.lineScore))}
+foot="direction integrity"
+active={liveMetrics.lineScore >= 60}
 />
-</div>
-</div>
-
-<div className="space-y-3">
-<div className="text-[11px] uppercase tracking-[0.35em] text-white/35">
-LIVE CONTROLS
 </div>
 
 <div className="flex flex-wrap gap-2">
-<button
+<ControlButton
 onClick={() => void captureRepFromLive(true)}
-className="border border-white/15 bg-white/6 px-4 py-2 text-sm text-white transition hover:border-[#39FF14]/50 hover:bg-white/10"
+variant="primary"
 >
-{saveStatus === "saving" ? "SAVING..." : "MARK REP"}
-</button>
+{saveStatus === "saving" ? "SAVING…" : "MARK REP"}
+</ControlButton>
 
-<button
-onClick={resetSession}
-className="border border-white/10 px-4 py-2 text-sm text-white/75 transition hover:bg-white/6"
->
-RESET
-</button>
+<ControlButton onClick={resetSession}>RESET</ControlButton>
 
 {!cameraEnabled ? (
-<button
-onClick={() => void startCamera()}
-className="border border-white/10 px-4 py-2 text-sm text-white/75 transition hover:bg-white/6"
->
+<ControlButton onClick={() => void startCamera()}>
 CAMERA
-</button>
+</ControlButton>
 ) : (
-<button
-onClick={stopCamera}
-className="border border-white/10 px-4 py-2 text-sm text-white/75 transition hover:bg-white/6"
->
-CAMERA OFF
-</button>
+<ControlButton onClick={stopCamera}>CAMERA OFF</ControlButton>
 )}
 
-<button
+<ControlButton
 onClick={() => {
 const next = !usingMockSignal;
 setUsingMockSignal(next);
@@ -945,184 +905,136 @@ setVideoReady(false);
 setVideoSize("0x0");
 }
 }}
-className="border border-white/10 px-4 py-2 text-sm text-white/75 transition hover:bg-white/6"
 >
 MOCK {usingMockSignal ? "ON" : "OFF"}
-</button>
+</ControlButton>
+</div>
 </div>
 
-<div className="text-xs text-white/35">
-Save:{" "}
-<span className="text-white">
-{saveStatus === "idle" && "IDLE"}
-{saveStatus === "saving" && "SAVING"}
-{saveStatus === "saved" && "SAVED"}
-{saveStatus === "error" && "ERROR"}
-</span>
-</div>
-
-{cameraError ? (
-<div className="text-xs text-white/40">{cameraError}</div>
-) : null}
-
-<div className="text-xs text-white/35">
-Detector:{" "}
-<span className="text-white">
+<div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-[11px] uppercase tracking-[0.24em] text-white/45">
+<span>
+Detector{" "}
+<b className="font-medium text-white">
 {detectorReady ? "READY" : "LOADING"}
+</b>
 </span>
-</div>
-
-<div className="text-xs text-white/35">
-Video:{" "}
-<span className="text-white">
+<span>
+Video{" "}
+<b className="font-medium text-white">
 {videoReady ? `LIVE ${videoSize}` : "NOT READY"}
+</b>
 </span>
-</div>
-
-<div className="text-xs text-white/35">
-Mock:{" "}
-<span className="text-white">
+<span>
+Mock{" "}
+<b className="font-medium text-white">
 {usingMockSignal ? "ON" : "OFF"}
+</b>
 </span>
-</div>
+<span className={saveTone}>
+Save <b className="font-medium text-current">{saveStatus.toUpperCase()}</b>
+</span>
+{cameraError ? <span className="text-[#FF6262]">{cameraError}</span> : null}
 </div>
 </div>
 
-<div className="ml-auto flex w-[24rem] flex-col justify-between border-l border-white/8 bg-black/10 p-6 md:p-8 backdrop-blur-[2px]">
-<div className="space-y-5">
-<div>
-<div className="text-[11px] uppercase tracking-[0.35em] text-white/35">
-LATEST REP
+<div className="rounded-[28px] border border-white/10 bg-black/45 p-4 backdrop-blur-md md:p-5">
+<div className="grid gap-4 md:grid-cols-[0.9fr,1.1fr]">
+<div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+<div className="text-[10px] uppercase tracking-[0.34em] text-white/40">
+Latest rep
 </div>
 
-<div className="mt-3 border border-white/10 p-4">
 {latestRep ? (
-<div className="space-y-3">
-<div className="text-xl font-semibold text-white">
-ENTRY {latestRep.entry}
+<>
+<div className="mt-3 text-2xl font-semibold text-white">
+{latestRep.entry}
 </div>
-
-<div className="grid grid-cols-2 gap-y-2 text-sm text-white/60">
-<span>Core</span>
-<span className="text-right text-white">
-{latestRep.core}
-</span>
-
-<span>Exit</span>
-<span className="text-right text-white">
-{latestRep.exit}
-</span>
-
-<span>Link</span>
-<span className="text-right text-white">
-{latestRep.integrity}
-</span>
-
-<span>Confidence</span>
-<span className="text-right text-white">
-{latestRep.confidence}
-</span>
-
-<span>Hold</span>
-<span className="text-right text-white">
-{latestRep.holdMs}ms
-</span>
-
-<span>Line</span>
-<span className="text-right text-white">
-{latestRep.lineScore}
-</span>
-
-<span>State</span>
-<span className="text-right text-white">
-{latestRep.axisState}
-</span>
-
-<span>Time</span>
-<span className="text-right text-white">
-{formatClock(latestRep.timestamp)}
-</span>
+<div className="mt-3 space-y-2 text-sm text-white/62">
+<MiniRow label="Core" value={latestRep.core} />
+<MiniRow label="Exit" value={latestRep.exit} />
+<MiniRow label="Link" value={latestRep.integrity} />
+<MiniRow label="Confidence" value={String(latestRep.confidence)} />
+<MiniRow label="Hold" value={formatMs(latestRep.holdMs)} />
+<MiniRow label="Time" value={formatClock(latestRep.timestamp)} />
 </div>
-</div>
+</>
 ) : (
-<div className="text-sm leading-6 text-white/50">
-No completed rep yet. Stand in frame. Lock body. Mark
-first rep.
+<div className="mt-3 text-sm leading-6 text-white/45">
+No completed rep yet. Acquire lock, open the field, then mark the event.
 </div>
 )}
 </div>
+
+<div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+<div className="text-[10px] uppercase tracking-[0.34em] text-white/40">
+Session report
 </div>
 
-<div>
-<div className="text-[11px] uppercase tracking-[0.35em] text-white/35">
-SESSION REPORT
+<div className="mt-3 grid grid-cols-2 gap-3">
+<ReportCard label="TOTAL" value={String(repHistory.length)} />
+<ReportCard label="AVG" value={String(averages.confidence)} />
+<ReportCard label="CLEAN" value={`${averages.cleanPct}%`} />
+<ReportCard label="STRAIGHT" value={`${averages.straightPct}%`} />
 </div>
 
-<div className="mt-3 space-y-3 border border-white/10 p-4 text-sm text-white/65">
-<Row label="Total reps" value={String(repHistory.length)} />
-<Row label="Avg confidence" value={`${averages.confidence}`} />
-<Row label="Clean" value={`${averages.cleanPct}%`} />
-<Row label="Straight" value={`${averages.straightPct}%`} />
-<Row label="Connected" value={`${averages.connectedPct}%`} />
-</div>
-</div>
+<div className="mt-4 text-xs uppercase tracking-[0.24em] text-white/42">
+Review stack
 </div>
 
-<div>
-<div className="mb-3 text-[11px] uppercase tracking-[0.35em] text-white/35">
-REP HISTORY
-</div>
-
-<div className="space-y-2">
+<div className="mt-2 max-h-[10rem] space-y-2 overflow-auto pr-1">
 {repHistory.length ? (
 repHistory.map((rep) => (
 <div
 key={rep.id}
-className="border border-white/10 px-3 py-2 text-sm"
+className="flex items-center justify-between rounded-xl border border-white/10 bg-black/30 px-3 py-2"
 >
-<div className="flex items-center justify-between">
-<div className="text-white">
+<div>
+<div className="text-sm text-white">
 {rep.entry} / {rep.exit}
 </div>
-<div className="text-white/45">{rep.confidence}</div>
+<div className="text-[11px] uppercase tracking-[0.18em] text-white/40">
+{rep.core} • {rep.integrity}
 </div>
-
-<div className="mt-1 text-xs text-white/40">
-core {rep.core} • link {rep.integrity}
 </div>
+<div className="text-sm text-white/65">{rep.confidence}</div>
 </div>
 ))
 ) : (
-<div className="border border-white/10 px-3 py-4 text-sm text-white/40">
+<div className="rounded-xl border border-white/10 bg-black/30 px-3 py-4 text-sm text-white/40">
 Session waiting.
 </div>
 )}
 </div>
 </div>
 </div>
-</section>
+</div>
+</div>
+</div>
+
+<div className="pointer-events-none absolute bottom-0 left-0 right-0 h-24 bg-gradient-to-t from-black/65 to-transparent" />
 </div>
 </main>
 );
 }
 
-function MetricCard({
+function TopChip({
 label,
 value,
-tone,
+active,
 }: {
 label: string;
-value: number;
-tone: "hot" | "cold";
+value: string;
+active?: boolean;
 }) {
 return (
-<div className="border border-white/10 bg-white/[0.02] p-3">
-<div className="text-[10px] uppercase tracking-[0.25em] text-white/35">
+<div className="rounded-2xl border border-white/10 bg-black/40 px-4 py-3 backdrop-blur-md">
+<div className="text-[10px] uppercase tracking-[0.28em] text-white/40">
 {label}
 </div>
 <div
-className="mt-2 text-2xl font-semibold"
-style={{ color: tone === "hot" ? "#39FF14" : "rgba(255,255,255,0.92)" }}
+className={`mt-2 text-sm font-medium ${
+active ? "text-[#7CFF6B]" : "text-white"
+}`}
 >
 {value}
 </div>
@@ -1130,11 +1042,94 @@ style={{ color: tone === "hot" ? "#39FF14" : "rgba(255,255,255,0.92)" }}
 );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function MetricRail({
+label,
+value,
+accent,
+}: {
+label: string;
+value: number;
+accent?: boolean;
+}) {
+return (
+<div className="rounded-2xl border border-white/10 bg-black/38 px-4 py-3 backdrop-blur-md">
+<div className="flex items-center justify-between text-[10px] uppercase tracking-[0.28em] text-white/42">
+<span>{label}</span>
+<span className={accent ? "text-[#7CFF6B]" : "text-white/55"}>{value}</span>
+</div>
+<div className="mt-3 h-[6px] overflow-hidden rounded-full bg-white/10">
+<div
+className={`h-full rounded-full ${accent ? "bg-[#7CFF6B]" : "bg-white/35"}`}
+style={{ width: `${clamp(value, 4, 100)}%` }}
+/>
+</div>
+</div>
+);
+}
+
+function StatCard({
+label,
+value,
+foot,
+active,
+}: {
+label: string;
+value: string;
+foot: string;
+active?: boolean;
+}) {
+return (
+<div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+<div className="text-[10px] uppercase tracking-[0.3em] text-white/38">
+{label}
+</div>
+<div className={`mt-2 text-2xl font-semibold ${active ? "text-[#7CFF6B]" : "text-white"}`}>
+{value}
+</div>
+<div className="mt-1 text-xs text-white/40">{foot}</div>
+</div>
+);
+}
+
+function ReportCard({ label, value }: { label: string; value: string }) {
+return (
+<div className="rounded-2xl border border-white/10 bg-black/25 p-3">
+<div className="text-[10px] uppercase tracking-[0.3em] text-white/38">
+{label}
+</div>
+<div className="mt-2 text-lg font-semibold text-white">{value}</div>
+</div>
+);
+}
+
+function MiniRow({ label, value }: { label: string; value: string }) {
 return (
 <div className="flex items-center justify-between">
 <span>{label}</span>
 <span className="text-white">{value}</span>
 </div>
+);
+}
+
+function ControlButton({
+children,
+onClick,
+variant = "secondary",
+}: {
+children: React.ReactNode;
+onClick: () => void;
+variant?: "primary" | "secondary";
+}) {
+return (
+<button
+onClick={onClick}
+className={
+variant === "primary"
+? "rounded-xl border border-[#7CFF6B]/35 bg-[#7CFF6B]/10 px-4 py-2 text-sm font-medium text-white transition hover:bg-[#7CFF6B]/16"
+: "rounded-xl border border-white/12 bg-white/[0.03] px-4 py-2 text-sm text-white/85 transition hover:bg-white/[0.08]"
+}
+>
+{children}
+</button>
 );
 }
